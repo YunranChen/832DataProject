@@ -26,6 +26,8 @@ library(grid)
 load("neuron.rdata")
 # Ys1 is a list under superimposed triplet {A,B,AB}
 # Ys2 is a list under adjacent triplet {A,B,AB}
+# specify the location for automatically saved plots
+vis.path="/Users/yunranchen/GoDuke/20Fall/STA832/data_proj"
 ```
 
 
@@ -107,8 +109,6 @@ df_cor_vec%>%group_by(condition)%>%
             median=median(corr),
             Q1=quantile(corr,0.25),
             Q2=quantile(corr,0.75))
-#library("ggfortify")
-#autoplot(cor(Y[,-1]))+xlab("")+ylab("")+coord_fixed()
 
 ```
 
@@ -254,7 +254,6 @@ neu=neu%>%mutate(prefer=if_else(spikeA>spikeB,"A","B"),score=abs(spikeA-spikeB)/
 ```{r}
 
 # 91 neurons
-vis.path="/Users/yunranchen/GoDuke/20Fall/STA832/data_proj"
 att_n2_a=left_join(counts_mat_a2,neu,by="neuron")
 att_n2_b=left_join(counts_mat_b2,neu,by="neuron")
 att_n2_ab=left_join(counts_mat_ab2,neu,by="neuron")
