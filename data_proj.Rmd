@@ -1,0 +1,405 @@
+---
+title: "832DataProject"
+author: "YunranChen"
+date: "10/14/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("R.matlab")
+library("stringr")
+library("purrr")
+library("dplyr")
+library("tidyr")
+library("ggplot2")
+library(scales)
+library(grid)
+#library(devtools)
+#install_github("vqv/ggbiplot")
+#library("ggbiplot")
+```
+
+# read data
+
+```{r}
+load("neuron.rdata")
+# Ys1 is a list under superimposed triplet {A,B,AB}
+# Ys2 is a list under adjacent triplet {A,B,AB}
+```
+
+
+# Analysis for superimposed triplets
+
+## EDA
+
+```{r}
+
+# 97 neurons 21,22,24 trials
+# data matrices for A,B,AB
+Y_np_a=spread(data = Ys1[[1]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+Filter(var,.)%>%
+t()%>%
+na.omit()%>%as.matrix()%>%t()
+Y_np_b=spread(data = Ys1[[2]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+Filter(var,.)%>%
+t()%>%
+na.omit()%>%as.matrix()%>%t()
+Y_np_ab=spread(data = Ys1[[3]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+Filter(var,.)%>%
+t()%>%
+na.omit()%>%as.matrix()%>%t()
+
+# visualization on density of spike counts
+Y_vec_a=c(Y_np_a[,-1])
+Y_vec_b=c(Y_np_b[,-1])
+Y_vec_ab=c(Y_np_ab[,-1])
+df_count_vec=tibble(spike_counts=c(Y_vec_a,Y_vec_b,Y_vec_ab),
+                    condition=rep(c("A","B","AB"),c(length(Y_vec_a),length(Y_vec_b),length(Y_vec_ab)))%>%
+                      factor(,level=c("A","B","AB")))
+ggplot(data=df_count_vec,aes(x=spike_counts,fill=condition,color=condition))+geom_density(alpha=0.5)
+ggsave(filename = paste0(vis.path,"/density_spk_n1",".png"),width = 5,height = 3)
+df_count_vec%>%group_by(condition)%>%
+  summarise(mean=mean(spike_counts),
+            median=median(spike_counts),
+            Q1=quantile(spike_counts,0.25),
+            Q2=quantile(spike_counts,0.75))
+
+df_count_a=Ys1[[1]]%>%group_by(neuron)%>%
+  summarise(mean=mean(spikecount),
+            median=median(spikecount),
+            Q1=quantile(spikecount,0.25),
+            Q2=quantile(spikecount,0.75),
+            std=sd(spikecount),
+            fano=std^2/mean)
+df_count_b=Ys1[[2]]%>%group_by(neuron)%>%
+  summarise(mean=mean(spikecount),
+            median=median(spikecount),
+            Q1=quantile(spikecount,0.25),
+            Q2=quantile(spikecount,0.75),
+            std=sd(spikecount),
+            fano=std^2/mean)
+df_count_ab=Ys1[[3]]%>%group_by(neuron)%>%
+  summarise(mean=mean(spikecount),
+            median=median(spikecount),
+            Q1=quantile(spikecount,0.25),
+            Q2=quantile(spikecount,0.75),
+            std=sd(spikecount),
+            fano=std^2/mean)
+df_count_=rbind(df_count_a,df_count_b,df_count_ab)%>%mutate(condition=rep(c("A","B","AB"),c(nrow(df_count_a),nrow(df_count_b),nrow(df_count_ab)))%>%factor(levels=c("A","B","AB")))
+ggplot(df_count_,aes(x=fano,color=condition,fill=condition))+geom_density(alpha=0.8)
+# visualization on density of pairwise correlation
+Y_cor_a=cor(Y_np_a[,-1])
+Y_cor_b=cor(Y_np_b[,-1])
+Y_cor_ab=cor(Y_np_ab[,-1])
+Y_cor_a_vec=c(Y_cor_a[upper.tri(Y_cor_a)])
+Y_cor_b_vec=c(Y_cor_b[upper.tri(Y_cor_b)])
+Y_cor_ab_vec=c(Y_cor_ab[upper.tri(Y_cor_ab)])
+
+df_cor_vec=tibble(corr=c(Y_cor_a_vec,Y_cor_b_vec,Y_cor_ab_vec),
+                    condition=rep(c("A","B","AB"),c(length(Y_cor_a_vec),length(Y_cor_b_vec),length(Y_cor_ab_vec)))%>%
+                      factor(,level=c("A","B","AB")))
+ggplot(data=df_cor_vec,aes(x=corr,fill=condition,color=condition))+geom_density(alpha=0.5)
+ggsave(filename = paste0(vis.path,"/density_corr1",".png"),width = 5,height = 3)
+
+df_cor_vec%>%group_by(condition)%>%
+  summarise(mean=mean(corr),
+            median=median(corr),
+            Q1=quantile(corr,0.25),
+            Q2=quantile(corr,0.75))
+#library("ggfortify")
+#autoplot(cor(Y[,-1]))+xlab("")+ylab("")+coord_fixed()
+
+```
+
+## PCA 
+
+```{r}
+abc=map(1:3,function(ind){
+Y_np=spread(data = Ys1[[ind]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+  Filter(var,.)%>%
+  t()%>%
+  na.omit()%>%
+  t()%>%
+  as.matrix()
+attribute=att_n%>%filter(condition==ind)%>%select(con1,con2,ori1,ori2,prefer,score)%>%distinct()%>%
+  filter(neuron%in%as.numeric(colnames(Y_np)[-1]))%>%
+  arrange(neuron)
+text_cond=paste0("Condition_",attribute$ABcond[1],":","A",attribute$ori1[1],"_","B",attribute$ori2[2],"_",nrow(Y_np))
+## PCA
+pca_res <- prcomp(Y_np[,-1], center = TRUE,scale. = TRUE)
+
+df.v=data_frame(xvar=pca_res$rotation[,1],yvar=pca_res$rotation[,2])
+df.v=bind_cols(df.v,attribute)%>%
+  mutate(prefer=as.factor(prefer))
+df.v$angle <- with(df.v, (180/pi) * atan(yvar / xvar))
+df.v$hjust = with(df.v, (1 - 1.5 * sign(xvar)) / 2)
+d <- pca_res$sdev^2
+csp1<-d / sum(d)
+u.axis.labs=sprintf('(%0.1f%% explained var.)',100*csp1[1:2])
+# plot the component loadings
+
+g <- ggplot(data = df.v, aes(x = xvar, y = yvar)) + 
+          xlab(u.axis.labs[1]) + ylab(u.axis.labs[2]) + theme_bw() 
+g <- g +
+      geom_segment(data = df.v,
+                   aes(x = 0, y = 0, xend = xvar, yend = yvar,color=prefer),
+                   arrow = arrow(length = unit(1/2, 'picas')))
+g <- g + 
+    geom_text(data = df.v, 
+              aes(label = neuron, x = xvar, y = yvar, 
+                  color=prefer,hjust=hjust,angle=angle),size=3)+coord_equal()
+ggsave(plot = g,filename = paste0(vis.path,"/pca_",text_cond,".png"),width = 5,height = 3)
+return(csp1)
+})
+eigen_val=tibble(eig=unlist(abc),condition=rep(c("A","B","AB"),map_dbl(abc,~length(.x)))%>%factor(,level=c("A","B","AB")))%>%
+  mutate(index=c(1:22,1:21,1:24))
+
+ggplot(eigen_val,aes(x=index,y=eig,color=condition))+geom_point()+geom_path()
+ggsave(filename = paste0(vis.path,"/pca_eigen",".png"),width = 5,height = 3)
+
+```
+
+
+# Analysis for adjacent triplets
+
+
+## EDA
+
+```{r}
+# 97 neurons 10,16,17 trials
+# data matrices for A,B,AB
+Y_np_a2=spread(data = Ys2[[1]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+Filter(var,.)%>%
+t()%>%
+na.omit()%>%as.matrix()%>%t()
+Y_np_b2=spread(data = Ys2[[2]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+Filter(var,.)%>%
+t()%>%
+na.omit()%>%as.matrix()%>%t()
+Y_np_ab2=spread(data = Ys2[[3]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+Filter(var,.)%>%
+t()%>%
+na.omit()%>%as.matrix()%>%t()
+
+# visualization on density of spike counts
+Y_vec_a2=c(Y_np_a2[,-1])
+Y_vec_b2=c(Y_np_b2[,-1])
+Y_vec_ab2=c(Y_np_ab2[,-1])
+df_count_vec2=tibble(spike_counts=c(Y_vec_a2,Y_vec_b2,Y_vec_ab2),
+                    condition=rep(c("A","B","AB"),c(length(Y_vec_a2),length(Y_vec_b2),length(Y_vec_ab2)))%>%
+                      factor(,level=c("A","B","AB")))
+ggplot(data=df_count_vec2,aes(x=spike_counts,fill=condition,color=condition))+geom_density(alpha=0.5)
+ggsave(filename = paste0(vis.path,"/density_spk_n2",".png"),width = 5,height = 3)
+
+df_count_vec2%>%group_by(condition)%>%
+  summarise(mean=mean(spike_counts),
+            median=median(spike_counts),
+            Q1=quantile(spike_counts,0.25),
+            Q2=quantile(spike_counts,0.75))
+df_count_a2=Ys2[[1]]%>%group_by(neuron)%>%
+  summarise(mean=mean(spikecount),
+            median=median(spikecount),
+            Q1=quantile(spikecount,0.25),
+            Q2=quantile(spikecount,0.75),
+            std=sd(spikecount))
+df_count_b2=Ys2[[2]]%>%group_by(neuron)%>%
+  summarise(mean=mean(spikecount),
+            median=median(spikecount),
+            Q1=quantile(spikecount,0.25),
+            Q2=quantile(spikecount,0.75),
+            std=sd(spikecount))
+df_count_ab2=Ys2[[3]]%>%group_by(neuron)%>%
+  summarise(mean=mean(spikecount),
+            median=median(spikecount),
+            Q1=quantile(spikecount,0.25),
+            Q2=quantile(spikecount,0.75),
+            std=sd(spikecount))
+df_count_2=rbind(df_count_a2,df_count_b2,df_count_ab2)%>%mutate(condition=rep(c("A","B","AB"),c(nrow(df_count_a2),nrow(df_count_b2),nrow(df_count_ab2)))%>%factor(levels=c("A","B","AB")))
+ggplot(df_count_2,aes(x=mean,color=condition,fill=condition))+geom_density(alpha=0.8)
+
+# visualization on density of pairwise correlation
+Y_cor_a2=cor(Y_np_a2[,-1])
+Y_cor_b2=cor(Y_np_b2[,-1])
+Y_cor_ab2=cor(Y_np_ab2[,-1])
+Y_cor_a_vec2=c(Y_cor_a2[upper.tri(Y_cor_a2)])
+Y_cor_b_vec2=c(Y_cor_b2[upper.tri(Y_cor_b2)])
+Y_cor_ab_vec2=c(Y_cor_ab2[upper.tri(Y_cor_ab2)])
+
+df_cor_vec2=tibble(corr=c(Y_cor_a_vec2,Y_cor_b_vec2,Y_cor_ab_vec2),
+                    condition=rep(c("A","B","AB"),c(length(Y_cor_a_vec2),length(Y_cor_b_vec2),length(Y_cor_ab_vec2)))%>%
+                      factor(,level=c("A","B","AB")))
+ggplot(data=df_cor_vec2,aes(x=corr,fill=condition,color=condition))+geom_density(alpha=0.5)
+ggsave(filename = paste0(vis.path,"/density_corr2",".png"),width = 5,height = 3)
+
+df_cor_vec2%>%group_by(condition)%>%
+  summarise(mean=mean(corr),
+            median=median(corr),
+            Q1=quantile(corr,0.25),
+            Q2=quantile(corr,0.75))
+
+
+```
+
+```{r}
+#calculate AB preference
+neu_a=counts_mat_a2%>%group_by(neuron)%>%summarise(spikeA=mean(spikecount))
+neu_b=counts_mat_b2%>%group_by(neuron)%>%summarise(spikeB=mean(spikecount))
+neu=inner_join(neu_a,neu_b,by="neuron")
+neu=neu%>%mutate(prefer=if_else(spikeA>spikeB,"A","B"),score=abs(spikeA-spikeB)/min(spikeA,spikeB))
+```
+
+## PCA 
+
+```{r}
+
+# 91 neurons
+vis.path="/Users/yunranchen/GoDuke/20Fall/STA832/data_proj"
+att_n2_a=left_join(counts_mat_a2,neu,by="neuron")
+att_n2_b=left_join(counts_mat_b2,neu,by="neuron")
+att_n2_ab=left_join(counts_mat_ab2,neu,by="neuron")
+att_n2=rbind(att_n2_a,att_n2_b,att_n2_ab)%>%mutate(condition=rep(1:3,c(nrow(att_n2_a),nrow(att_n2_b),nrow(att_n2_ab))))
+abc2=map(1:3,function(ind){
+Y_np=spread(data = Ys2[[ind]]%>%select(cond_id,neuron,spikecount),neuron,spikecount)%>%
+  Filter(var,.)%>%
+  t()%>%
+  na.omit()%>%
+  t()%>%
+  as.matrix()
+attribute=att_n2%>%filter(condition==ind)%>%select(neuron,prefer,score)%>%distinct()%>%
+  filter(neuron%in%as.numeric(colnames(Y_np)[-1]))%>%
+  arrange(neuron)
+text_cond=paste0("Condition_",attribute$ABcond[1],":","A",attribute$ori1[1],"_","B",attribute$ori2[2],"_",nrow(Y_np))
+## PCA
+pca_res <- prcomp(Y_np[,-1], center = TRUE,scale. = TRUE)
+
+df.v=data_frame(xvar=pca_res$rotation[,1],yvar=pca_res$rotation[,2])
+df.v=bind_cols(df.v,attribute)%>%
+  mutate(prefer=as.factor(prefer))
+df.v$angle <- with(df.v, (180/pi) * atan(yvar / xvar))
+df.v$hjust = with(df.v, (1 - 1.5 * sign(xvar)) / 2)
+d <- pca_res$sdev^2
+csp1<-d / sum(d)
+u.axis.labs=sprintf('(%0.1f%% explained var.)',100*csp1[1:2])
+# plot the component loadings
+
+g <- ggplot(data = df.v, aes(x = xvar, y = yvar)) + 
+          xlab(u.axis.labs[1]) + ylab(u.axis.labs[2]) + theme_bw() 
+g <- g +
+      geom_segment(data = df.v,
+                   aes(x = 0, y = 0, xend = xvar, yend = yvar,color=prefer),
+                   arrow = arrow(length = unit(1/2, 'picas')))
+g <- g + 
+    geom_text(data = df.v, 
+              aes(label = neuron, x = xvar, y = yvar, 
+                  color=prefer,hjust=hjust,angle=angle),size=3)+coord_equal()
+ggsave(plot = g,filename = paste0(vis.path,"/pca2_",text_cond,".png"),width = 5,height = 3)
+return(csp1)
+})
+eigen_val2=tibble(eig=unlist(abc2),condition=rep(c("A","B","AB"),map_dbl(abc2,~length(.x)))%>%factor(,level=c("A","B","AB")))%>%
+  mutate(index=c(1:16,1:10,1:17))
+ggplot(eigen_val2,aes(x=index,y=eig,color=condition))+geom_point()+geom_path()
+ggsave(filename = paste0(vis.path,"/pca_eigen2",".png"),width = 5,height = 3)
+```
+
+## Factor Analysis
+
+```{r}
+## em function
+fana_em<-function(Y,APsi){
+  ## one EM step
+  A<-APsi$A
+  Psi<-APsi$Psi
+  iPsi<-diag(1/diag(Psi))
+  
+  Vz<-solve(t(A)%*%iPsi%*%A+diag(nrow=ncol(A)))
+  Zb<-Y%*%iPsi%*%A%*%Vz
+  Sb<-t(Zb)%*%Zb+nrow(Y)*Vz
+  
+  A<-t(Y)%*%Zb%*%solve(Sb)
+  Psi<-diag(diag(t(Y)%*%Y-2*t(Y)%*%Zb%*%t(A)+A%*%Sb%*%t(A)))/nrow(Y)
+  list(A=A,Psi=Psi)
+  
+}
+## -log likelihood
+fana_m2ll<-function(Y,APsi){
+  A<-APsi$A
+  Psi<-APsi$Psi
+  Sigma<-tcrossprod(A)+Psi
+  nrow(Y)*log(det(Sigma))+sum(diag(crossprod(Y)%*%solve(Sigma)))
+}
+fana_mle<-function(Y,q,tol=1e-8){
+  
+  ## sweep out mean
+  mu<-apply(Y,2,mean)
+  Y<-sweep(Y,2,mu,"-")
+  
+  ## starting values
+  s<-apply(Y,2,sd)
+  R<-cor(Y)
+  tmp<-R
+  diag(tmp)<-0
+  h<-apply(abs(tmp),1,max)
+  Psi<-diag(1-h,nrow = ncol(Y))
+  for (j in 1:2){
+    eX<-svd(R-Psi,nu=q,nv=0)
+    A<-eX$u[,1:q,drop=FALSE]%*%sqrt(diag(eX$d[1:q],nrow = q))
+    Psi<-diag(pmax(diag(R-tcrossprod(A)),1e-3))
+  }
+  A<-sweep(A,1,s,"*")
+  diag(Psi)<-diag(Psi)*s^2
+  APsi<-list(A=A,Psi=Psi)
+  
+  ## EM algorithm
+  M2LL<-c(Inf,fana_m2ll(Y,APsi))
+  while(diff(rev(tail(M2LL,2)))/abs(tail(M2LL,1))>tol){
+    APsi<-fana_em(Y,APsi)
+    M2LL<-c(M2LL,fana_m2ll(Y,APsi))
+  }
+  
+  ## output 
+  list(mu=mu,A=APsi$A,Psi=APsi$Psi,M2LL=M2LL,Sigma=tcrossprod(APsi$A)+APsi$Psi,
+       npq=c(nrow(Y),ncol(Y),ncol(A)))
+}
+```
+
+```{r,cache=TRUE}
+
+Y=Y_np_ab2[,-1]
+sam_var_mat=var(Y)
+#select # of factors
+fana_bic<-function(fit)
+{
+  npar<- min( fit$npq[2]*(fit$npq[3]+1) - choose(fit$npq[3],2), choose(fit$npq[2]+1,2) )
+tail(fit$M2LL,1) + log(fit$npq[1])*npar }
+dim(Y)
+bic2=map_dbl(1:10,function(x){
+  fit1=fana_mle(Y,x)
+  fana_bic(fit1)
+})
+bic2
+fit_2=fana_mle(Y,2)
+fm2ll=fit_2$M2LL[-1]
+plot(1:length(fm2ll),fm2ll)
+plot(length(fit_2$M2LL) - (50:1),tail(fm2ll,50))
+est_cov=tcrossprod(fit_2$A) + fit_2$Psi
+fana_cov=tibble(sample_cov=c(sam_var_mat),estimator=c(est_cov))
+ggplot(fana_cov,aes(x=sample_cov,y=estimator))+geom_point(alpha=0.6)+coord_equal()+geom_abline(slope=1,intercept=0)+ggtitle("(a)")
+ggsave(filename = paste0(vis.path,"/fana_cov",".png"),width = 3.5,height = 3)
+
+fana_cor=tibble(sample_cor=c(cov2cor(sam_var_mat)),estimator=c(cov2cor(est_cov)))
+ggplot(fana_cor,aes(x=sample_cor,y=estimator))+geom_point(alpha=0.6)+coord_equal()+geom_abline(slope=1,intercept=0)+ggtitle("(b)")
+ggsave(filename = paste0(vis.path,"/fana_cor",".png"),width = 3.5,height = 3)
+
+
+fit_2$A #factor loadings
+fana_ld=fit_2$A
+colnames(fana_ld)=c("factor1","factor2")
+fana_ld=as.data.frame(fana_ld)
+fana_ld=fana_ld%>%mutate(neuron=rownames(fit_2$A)%>%as.numeric())
+fana_ld=fana_ld%>%left_join(.,neu)%>%mutate(prefer=factor(prefer))
+ggplot(fana_ld,aes(x=factor1,y=factor2,color=prefer))+geom_point()+coord_equal()+ggtitle("(c)")
+ggsave(filename = paste0(vis.path,"/fana_ld",".png"),width = 3.5,height = 3)
+
+
+```
